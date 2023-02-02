@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/uptrace/bun/dialect"
+	"github.com/uptrace/bun/extra/bunjson"
 	"github.com/uptrace/bun/schema"
 )
 
@@ -68,6 +69,19 @@ func arrayAppendDriverValue(fmter schema.Formatter, b []byte, v reflect.Value) [
 	return arrayAppend(fmter, b, iface)
 }
 
+func arrayAppendJSONValue(fmter schema.Formatter, b []byte, v reflect.Value) []byte {
+	bb, err := bunjson.Marshal(v.Interface())
+	if err != nil {
+		return dialect.AppendError(b, err)
+	}
+
+	if len(bb) > 0 && bb[len(bb)-1] == '\n' {
+		bb = bb[:len(bb)-1]
+	}
+
+	return dialect.AppendJSONUnquoted(b, bb)
+}
+
 //------------------------------------------------------------------------------
 
 func (d *Dialect) arrayAppender(typ reflect.Type) schema.AppenderFunc {
@@ -107,6 +121,8 @@ func (d *Dialect) arrayAppender(typ reflect.Type) schema.AppenderFunc {
 	}
 
 	return func(fmter schema.Formatter, b []byte, v reflect.Value) []byte {
+		brackets := "{}"
+
 		kind := v.Kind()
 		switch kind {
 		case reflect.Ptr, reflect.Slice:
@@ -117,20 +133,38 @@ func (d *Dialect) arrayAppender(typ reflect.Type) schema.AppenderFunc {
 
 		if kind == reflect.Ptr {
 			v = v.Elem()
+			kind = v.Kind()
+		}
+
+		if kind == reflect.Slice {
+			elemType := v.Type().Elem()
+
+			for elemType.Kind() == reflect.Ptr {
+				elemType = elemType.Elem()
+			}
+
+			if elemType.Kind() == reflect.Struct {
+				brackets = "[]"
+			}
 		}
 
 		b = append(b, '\'')
 
-		b = append(b, '{')
+		b = append(b, brackets[0])
 		for i := 0; i < v.Len(); i++ {
 			elem := v.Index(i)
+
+			for elem.Kind() == reflect.Ptr {
+				elem = elem.Elem()
+			}
+
 			b = appendElem(fmter, b, elem)
 			b = append(b, ',')
 		}
 		if v.Len() > 0 {
-			b[len(b)-1] = '}' // Replace trailing comma.
+			b[len(b)-1] = brackets[1] // Replace trailing comma.
 		} else {
-			b = append(b, '}')
+			b = append(b, brackets[1])
 		}
 
 		b = append(b, '\'')
@@ -143,9 +177,16 @@ func (d *Dialect) arrayElemAppender(typ reflect.Type) schema.AppenderFunc {
 	if typ.Implements(driverValuerType) {
 		return arrayAppendDriverValue
 	}
+
+	if typ.Kind() == reflect.Ptr {
+		return d.arrayElemAppender(typ.Elem())
+	}
+
 	switch typ.Kind() {
 	case reflect.String:
 		return arrayAppendStringValue
+	case reflect.Struct:
+		return arrayAppendJSONValue
 	case reflect.Slice:
 		if typ.Elem().Kind() == reflect.Uint8 {
 			return arrayAppendBytesValue

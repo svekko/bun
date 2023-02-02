@@ -5,6 +5,7 @@ import (
 	"strconv"
 
 	"github.com/uptrace/bun/internal"
+	"github.com/uptrace/bun/internal/parser"
 )
 
 func AppendError(b []byte, err error) []byte {
@@ -84,5 +85,33 @@ loop:
 	if quoted {
 		b = append(b, quote)
 	}
+	return b
+}
+
+func AppendJSONUnquoted(b, jsonb []byte) []byte {
+	p := parser.New(jsonb)
+	for p.Valid() {
+		c := p.Read()
+		switch c {
+		case '"':
+			b = append(b, '"')
+		case '\'':
+			b = append(b, "''"...)
+		case '\000':
+			continue
+		case '\\':
+			if p.SkipBytes([]byte("u0000")) {
+				b = append(b, `\\u0000`...)
+			} else {
+				b = append(b, '\\')
+				if p.Valid() {
+					b = append(b, p.Read())
+				}
+			}
+		default:
+			b = append(b, c)
+		}
+	}
+
 	return b
 }
